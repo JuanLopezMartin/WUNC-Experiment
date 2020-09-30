@@ -1,0 +1,419 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(MuMIn)
+library(MASS)
+library(plm)
+library(rstanarm)
+library(bayesplot)
+Sys.setenv(LOCAL_CPPFLAGS = '-march=corei7 -mtune=corei7')
+options(mc.cores = parallel::detectCores(logical = FALSE))
+```
+
+## A multilevel model for social movement support
+
+We start by introducing the model. We say that $y_{ij}$ depends on the following multilevel model, defined for $i$ participants and $j$ social movements:
+
+$$
+\begin{align}
+y_{ij} = \alpha + \alpha_{[j]} + \alpha_{[i]} + \beta_{0} *{\rm Affinity}_{ij} + \beta_{1} *X_{1ij} + \beta_{2} *X_{2ij} + \beta_{3} *X_{3ij} + \beta_{4} *X_{4ij} + \beta_{5} *X_{5ij}  + \\
+\beta_{0[j]} *{\rm Affinity}_{ij} + \beta_{1[j]} *X_{1ij} + \beta_{2[j]} *X_{2ij} + \beta_{3[j]} *X_{3ij} + \beta_{4[j]} *X_{4ij} + \beta_{5[j]} *X_{5ij}  +\\
+\beta_{0[i]} *{\rm Affinity}_{ij} + \beta_{1[i]} *X_{1ij} + \beta_{2[i]} *X_{2ij} + \beta_{3[i]} *X_{3ij} + \beta_{4[i]} *X_{4ij} + \beta_{5[i]} *X_{5ij} + \epsilon
+\end{align}
+
+$$
+
+We start describing the outcome, $y_{ij}$. I think it is reasonable that we assume a bounded Gaussian outcome, for instance between -5 and +5. In the experiment this could be, as Erica suggested, a slider between -5 and +5, or maybe the average score of multiple Likert questions. In any case, we will image it represents some measure of support towards the social movement.
+
+Let's focus on the first line of predictors. ${\rm Affinity}$ is an measurement of the (scaled) difference between the movement's general ideology (left-right in a -3 to +3 point scale) with the participant ideology (also -3 to +3). In our case, we reescale ${\rm Affinity}$ so it ranges between 1 (maximum affinity, which occurs if the movement and person ideology are the same) to 0 (minimum affinity). The $X$s represent the five different treatments, such as the number of likes of the website or the diversity of its supporters. For simplicity, we will only consider 5 different treatments, with all of them required to be dichotomous. Obviously, the corresponding coefficients $\beta_{0}, \beta_{1}, ..., \beta_{5}$ represent the ATE for political affinity and the five treatments For simplicity I think we can ignore demographics and other covariates, although I will advise to include them in the actual data analysis for the pilot.
+
+Now, let's consider the second and third lines. In many settings, it is traditional to use non-multilevel models for these types of simulations, only including line 1 (which is effectivelly setting all the coefficients in line 2 and 3 to zero). I see the reason for only using the ATE in some cases, but in these types of studies we probably should include this individual-level and movement-level coefficients as the effects are expected to vary between subjects and between movements. We don't all care about the same things when evaluating a social movement, and not all the factors influence in the same way all social movements. Starting with the first coefficient, we have already seen that the coefficient $\beta_0$ represents the average effect of affinity on support. However, in some social movements political affinity may be more important (e.g. gun control) than in others (e.g. releasing classified information about area 51). This is reflectd in the $\beta_0[j]$ coefficient. For instance, if we had that $\beta_0 = 3$, it could be the case that $\beta_{0[{\rm GunControl}]} = 1$ (i.e. making the avergae effect of affinity in the gun control movement $\beta_0 + \beta_{0[{\rm GunControl}]} = 3+1 = 4$) and that $\beta_{0[{\rm Area 51}]} = -1$ (i.e. making the avergae effect of affinity in the Area 5 movement $\beta_0 + \beta_{0[{\rm Area51}]} = 3-1 = 2$). However, instead of defining the coefficient for the $j$ social movements individually, we assume it is distributted normally such as $N(0, \sigma_{\beta_{0[j]}})$, where $\sigma_{\beta_{0[j]}}$ represents how much the movement-level coefficients depart from the average effect of political affinity. The third line represents the same principle, but this time the coefficinets vary per individual participant. This reflects, again, the idea that affinity and the treatment conditions do not have the same effect in all participants. For instance, if Participant 66 with $\beta_{0[{\rm Participant 66}]} = -0.5$ (i.e. which implies he cares less about ideological congruency between his or her views and the politicial leaning of th movement than average) was presented with the Area 51 study, the influence of affinity in this case would be $\beta_0 + \beta_{0[{\rm Area51}]} + \beta_{0[{\rm Participant 66}]} = 3-1-0.5 = 1.5$.
+
+There are two elements of the formula we have not presented. The intercept, $\alpha$, represents the average support for someone with zero affinity and all the treatment conditions set to zero. This is in turn modified by $\alpha_{[j]}$ and $\alpha_{[i]}$ in the same way as described for the coefficients. Lastly, $\epsilon$ represents the unexplained variance, and is thus inversely proportional to the $R^2$ we obtain.
+
+## Parameters for the simulation
+
+We will start simulating a study with five treatment variables that considers 500 participants where each participant evaluates 5 social movements The table below shows the intercept and coefficients that I will use. In the Shiny application you can change these default values and also the number of participants and social movements.
+
+\begin{table}[]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+Mean & Individual-level variation & Movement-level variation \\ \hline
+$\alpha = -4$ & $\alpha_{[i]} \sim N(0, \sigma_{\alpha_{[i]}} = 0.5)$ & $\alpha_{[j]} \sim N(0, \sigma_{\alpha_{[j]}} = 1)$ \\ \hline
+$\beta_0 = 2$ & $\beta_{0[i]} \sim N(0, \sigma_{\beta_{0[i]}} = 0.5)$ & $\beta_{0[j]} \sim N(0, \sigma_{\beta_{0[j]}} = 1)$ \\ \hline
+$\beta_1 = 0.8$ & $\beta_{1[i]} \sim N(0, \sigma_{\beta_{1[i]}} = 0.2)$ & $\beta_{1[j]} \sim N(0, \sigma_{\beta_{1[j]}} = 0.4)$ \\ \hline
+$\beta_2 = 0.4$ & $\beta_{2[i]} \sim N(0, \sigma_{\beta_{2[i]}} = 0.1)$ & $\beta_{2[j]} \sim N(0, \sigma_{\beta_{2[j]}} = 0.2)$ \\ \hline
+$\beta_3 = 0.2$ & $\beta_{3[i]} \sim N(0, \sigma_{\beta_{3[i]}} = 0.05)$ & $\beta_{3[j]} \sim N(0, \sigma_{\beta_{3[j]}} = 0.1)$ \\ \hline
+$\beta_4 = 0.1$ & $\beta_{4[i]} \sim N(0, \sigma_{\beta_{4[i]}} = 0.025)$ & $\beta_{4[j]} \sim N(0, \sigma_{\beta_{4[j]}} = 0.05)$ \\ \hline
+$\beta_5 = 0.05$ & $\beta_{5[i]} \sim N(0, \sigma_{\beta_{5[i]}} = 0.0125)$ & $\beta_{5[j]} \sim N(0, \sigma_{\beta_{5[j]}} = 0.025)$ \\ \hline
+\end{tabular}
+\end{table}
+
+Lastly, we specify that $\epsilon \sim N(0, \sigma_{\epsilon} = 2$.
+
+## Simulating a dataset
+
+We start introducing the values defined in the previous section.
+
+```{r}
+coefs <- data.frame(alpha = c(-2.25, 0.5, 1),
+           beta0 = c(2, 0.5, 1),
+           beta1 = c(0.8, 0.2, 0.4),
+           beta2 = c(0.4, 0.1, 0.2),
+           beta3 = c(0.2, 0.05, 0.1),
+           beta4 = c(0.1, 0.025, 0.05),
+           beta5 = c(0.05, 0.0125, 0.025))
+
+coefs
+```
+
+After that, we simulate the design matrix.
+
+```{r}
+N_subjects = 1000
+n_movements_per_subject = 5
+total_rows = N_subjects*n_movements_per_subject
+
+# Design matrix in which the 1000 subjects are randomly assigned to five different conditions
+design_mat <- matrix(replicate(total_rows, rbinom(5, size = 1, .5)), nrow = total_rows)
+movements <- rep(c(1,2,3,4,5), N_subjects)
+participants <- sort(rep(1:N_subjects, 5))
+design_mat  <- data.frame(cbind(participants, movements, design_mat))
+colnames(design_mat) <- c("participant_ID", "movement_ID", "X1", "X2", "X3", "X4", "X5")
+head(design_mat)
+```
+
+Then we simulate the participant-level intercept and coefficients.
+
+```{r}
+participant_ID <- 1:N_subjects
+political_affiliation <- rnorm(N_subjects, 0, 1.5)
+alpha_p <- mvrnorm(N_subjects, 0, coefs$alpha[2], empirical=TRUE)
+beta0_p <- mvrnorm(N_subjects, 0, coefs$beta0[2], empirical=TRUE)
+beta1_p <- mvrnorm(N_subjects, 0, coefs$beta1[2], empirical=TRUE)
+beta2_p <- mvrnorm(N_subjects, 0, coefs$beta2[2], empirical=TRUE)
+beta3_p <- mvrnorm(N_subjects, 0, coefs$beta3[2], empirical=TRUE)
+beta4_p <- mvrnorm(N_subjects, 0, coefs$beta4[2], empirical=TRUE)
+beta5_p <- mvrnorm(N_subjects, 0, coefs$beta5[2], empirical=TRUE)
+participants_mat  <- data.frame(participant_ID, political_affiliation, alpha_p, beta0_p, beta1_p, beta2_p, beta3_p, beta4_p, beta5_p)
+head(participants_mat)
+```
+
+We also simulate the movement-level intercept and coefficients:
+
+```{r}
+movement_ID <- 1:n_movements_per_subject
+alpha_m <- mvrnorm(n_movements_per_subject, 0, coefs$alpha[3], empirical=TRUE)
+beta0_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta0[3], empirical=TRUE)
+beta1_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta1[3], empirical=TRUE)
+beta2_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta2[3], empirical=TRUE)
+beta3_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta3[3], empirical=TRUE)
+beta4_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta4[3], empirical=TRUE)
+beta5_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta5[3], empirical=TRUE)
+movement_ideology <- c(-2, -1, 0, 1, 2)
+movements_mat  <- data.frame(movement_ID, movement_ideology, alpha_m, beta0_m, beta1_m, beta2_m, beta3_m, beta4_m, beta5_m)
+head(movements_mat)
+```
+
+We merge the three previous tables into a single dataset. 
+
+```{r}
+df <- inner_join(design_mat, participants_mat, by = "participant_ID")
+df <- inner_join(df, movements_mat, by = "movement_ID")
+df$affinity <- (6 - abs(df$movement_ideology - df$political_affiliation))/6
+
+head(df)
+```
+
+Lastly, we run the model in order to obtain the outcome measure. We also visualize the distribution of the outcome below.
+
+```{r}
+df$support <- coefs$alpha[1] + df$alpha_p + df$alpha_m +
+    as.matrix(df[,c("affinity", "X1", "X2", "X3", "X4", "X5")]) %*% t(coefs[1,2:7]) + 
+    rowSums(as.matrix(df[,c("affinity", "X1", "X2", "X3", "X4", "X5")]) * df[,c("beta0_p", "beta1_p", "beta2_p", "beta3_p", "beta4_p", "beta5_p")]) + 
+    rowSums(as.matrix(df[,c("affinity", "X1", "X2", "X3", "X4", "X5")]) * df[,c("beta0_m", "beta1_m", "beta2_m", "beta3_m", "beta4_m", "beta5_m")]) +
+    rnorm(total_rows, 0, 2)
+pmin_pmax_clip <- function(x, a, b) pmax(a, pmin(x, b))
+df$support <- pmin_pmax_clip(df$support, -8, 8)
+
+ggplot(data = df, aes(x = support)) + geom_histogram(bins = 40) + xlim(c(-8,8)) + theme_bw()
+```
+
+## Data analysis
+
+Once we have simulated the dataset we will do the data analysis to see how well we can recover the defined coeficients and intercepts.
+
+### A simple linear regression
+
+As an experiment we can remove the multilevel part of the above model and fit a simple linear regression. 
+
+```{r}
+m1 <- lm(support ~ 1 + affinity + X1 + X2 + X3 + X4 + X5, data = df)
+summary(m1)
+```
+
+### Bayesian model
+
+The only way to fit a model with this level of complexity is to use a Bayesian approach. See the results below.
+
+```{r, results='hide'}
+fit1 <- stan_glmer(support ~ 1 + affinity + X1 + X2 + X3 + X4 + X5 + (1 + affinity + X1 + X2 + X3 + X4 + X5 | movement_ID) + (1 + affinity + X1 + X2 + X3 + X4 + X5 | participant_ID), 
+                   data = df, iter = 6000, chains = 6, seed = 2020, adapt_delta = 0.999)
+save.image(file = "simulation_objects/bayes_fit.RData")
+#load("simulation_objects/bayes_fit.RData")
+```
+
+```{r}
+print(fit1, digits = 3)
+paste("The R^2 is", round(mean(rstanarm::bayes_R2(fit1)), 3))
+```
+
+There is one considerable disadvantage of using a Bayesian method: it can take a long time to process a dataset of this size. In particular, this model took 5 hours to fit. Obviously, for a final analysis this is not a problem, but a Shiny app would not be useful if it took 5 hours to display the output.
+
+### Frequentist model
+
+A frequentist approach for estimation takes only a few seconds. However, it has two main disadvantages: 
+
+1. This approach cannot fit multilevel models with more parameters than data points. Remeber, for instance, that in our model we defined that each participant has his or her own $\alpha_{[i]}, \beta_{0[i]}, \beta_{1[i]}, ..., \beta_{5[i]}$. With 500 participants, this already implies 3000 parameters (and is not even including the average effects or the movement-level coeffiicents). This forces us to exclude the individual-level effects.
+
+2. The SE are usually underestimated with the frequentist approach. In this case, this is mainly driven by the fact that we are excluding the individual-level effects. Intuitively, we see that by not including the individual-level effects the model does not know that our study is only using 500 participants instead of 2500. Obviously, using 500 participants contains less information than using 2500, and this the underestimation for the SEs. Economists often correct for this tendency using clustered/robust standard errors. This is, as far as I know, not something that is implemented for multilevel models in R.
+
+```{r, warning=FALSE}
+fit_lme <- lmer(support ~ 1 + affinity + X1 + X2 + X3 + X4 + X5 + (1 + affinity + X1 + X2 + X3 + X4 + X5 | movement_ID),
+                data = df)
+summary(fit_lme)
+paste("The R^2 is", round(r.squaredGLMM(fit_lme)[2], 3))
+```
+
+Note that, in fact the coefficients for the fixed-effects are somewhat smaller than in the Bayesian model. In particular, the SEs are about 10%-20% larger in the Bayesian model. Also note that not including individual-level effects decreases the $R^2$. 
+
+### A simple linear regression
+
+As an experiment we can remove the multilevel part of the above model and fit a simple linear regression. 
+
+```{r}
+m1 <- lm(support ~ 1 + affinity + X1 + X2 + X3 + X4 + X5, data = df)
+summary(m1)
+```
+
+```{r}
+m2 <- plm(support ~ affinity + X1 + X2 + X3 + X4 + X5, data = df)
+coef_test(m2, vcov = clubSandwich::vcovCR(m2, cluster = df$participant_ID, type = "CR1")+clubSandwich::vcovCR(m2, cluster = df$movement_ID, type = "CR1"), test = "naive-t", cluster = "individual")
+```
+
+
+```{r}
+m1 <- lm(support ~ affinity + X1 + X2 + X3 + X4 + X5, data = df)
+summary(m1)
+coeftest(m1, cluster.boot(m1, cluster = cbind(as.character(df$participant_ID), as.character(df$movement_ID))))
+```
+
+affinity     3.552  0.250
+X1           1.268  0.122
+X2           0.608  0.113
+X3           0.470  0.109
+X4           0.212  0.116
+X5          -0.052  0.127
+
+
+Note how the SEs further decrease (10%-20% relative to the frequentist model and 20%-40% relative to the Bayesian model). Similarly, the $R^2$ also decreases.
+
+## A Shiny App
+
+I built a Shiny app that allows to intercat with the frequentist-multilevel model.
+
+* As we have seen, the SEs that are reporter are therefore underestimating the true SE by around 15%. Although it would be possible to correct for this deviation, 
+* The reported $R^2$ is subject to Monte Carlo error, meanining that simulation defined with similar parameters can obtain a different $R^2$. In my experience this variation can be 
+
+```{r}
+S <- 1000
+coef_reps <- matrix(rep(NA, 7*S), ncol = 7, nrow = S)
+se_reps <- matrix(rep(NA, 7*S), ncol = 7, nrow = S)
+
+for(i in 1:S){
+  coefs <- data.frame(alpha = c(-3, 0.5, 1),
+             beta0 = c(2, 0.5, 1),
+             beta1 = c(0.8, 0.2, 0.4),
+             beta2 = c(0.4, 0.1, 0.2),
+             beta3 = c(0.2, 0.05, 0.1),
+             beta4 = c(0.1, 0.025, 0.05),
+             beta5 = c(0.05, 0.0125, 0.025))
+  N_subjects = 500
+  n_movements_per_subject = 5
+  total_rows = N_subjects*n_movements_per_subject
+  
+  # Design matrix in which the 1000 subjects are randomly assigned to five different conditions
+  design_mat <- matrix(replicate(total_rows, rbinom(5, size = 1, .5)), nrow = total_rows)
+  movements <- rep(1:n_movements_per_subject, N_subjects)
+  participants <- sort(rep(1:N_subjects, n_movements_per_subject))
+  design_mat  <- data.frame(cbind(participants, movements, design_mat))
+  colnames(design_mat) <- c("participant_ID", "movement_ID", "X1", "X2", "X3", "X4", "X5")
+  
+  participant_ID <- 1:N_subjects
+  political_affiliation <- rnorm(N_subjects, 0, 1.5)
+  alpha_p <- mvrnorm(N_subjects, 0, coefs$alpha[2], empirical=TRUE)
+  beta0_p <- mvrnorm(N_subjects, 0, coefs$beta0[2], empirical=TRUE)
+  beta1_p <- mvrnorm(N_subjects, 0, coefs$beta1[2], empirical=TRUE)
+  beta2_p <- mvrnorm(N_subjects, 0, coefs$beta2[2], empirical=TRUE)
+  beta3_p <- mvrnorm(N_subjects, 0, coefs$beta3[2], empirical=TRUE)
+  beta4_p <- mvrnorm(N_subjects, 0, coefs$beta4[2], empirical=TRUE)
+  beta5_p <- mvrnorm(N_subjects, 0, coefs$beta5[2], empirical=TRUE)
+  participants_mat  <- data.frame(participant_ID, political_affiliation, alpha_p, beta0_p, beta1_p, beta2_p, beta3_p, beta4_p, beta5_p)
+  movement_ID <- 1:n_movements_per_subject
+  alpha_m <- mvrnorm(n_movements_per_subject, 0, coefs$alpha[3], empirical=TRUE)
+  beta0_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta0[3], empirical=TRUE)
+  beta1_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta1[3], empirical=TRUE)
+  beta2_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta2[3], empirical=TRUE)
+  beta3_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta3[3], empirical=TRUE)
+  beta4_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta4[3], empirical=TRUE)
+  beta5_m <- mvrnorm(n_movements_per_subject, 0, coefs$beta5[3], empirical=TRUE)
+  movement_ideology <- seq(-2, 2, length.out = n_movements_per_subject)
+  movements_mat  <- data.frame(movement_ID, movement_ideology, alpha_m, beta0_m, beta1_m, beta2_m, beta3_m, beta4_m, beta5_m)
+  
+  df <- inner_join(design_mat, participants_mat, by = "participant_ID")
+  df <- inner_join(df, movements_mat, by = "movement_ID")
+  df$affinity <- (6 - abs(df$movement_ideology - df$political_affiliation))/6
+  
+  df$support <- coefs$alpha[1] + df$alpha_p + df$alpha_m +
+    as.matrix(df[,c("affinity", "X1", "X2", "X3", "X4", "X5")]) %*% t(coefs[1,2:7]) + 
+    rowSums(as.matrix(df[,c("affinity", "X1", "X2", "X3", "X4", "X5")]) * df[,c("beta0_p", "beta1_p", "beta2_p", "beta3_p", "beta4_p", "beta5_p")]) + 
+    rowSums(as.matrix(df[,c("affinity", "X1", "X2", "X3", "X4", "X5")]) * df[,c("beta0_m", "beta1_m", "beta2_m", "beta3_m", "beta4_m", "beta5_m")]) +
+    rnorm(total_rows, 0, 2)
+  pmin_pmax_clip <- function(x, a, b) pmax(a, pmin(x, b))
+  df$support <- pmin_pmax_clip(df$support, -5, 5)
+  
+  summ <- summary(lm(support ~ affinity + X1 + X2 + X3 + X4 + X5, data = df))
+  coef_reps[i,] <- summ$coefficients[,1]
+  se_reps[i,] <- summ$coefficients[,2]
+}
+apply(coef_reps, MARGIN = 2, FUN = mean)
+apply(se_reps, MARGIN = 2, FUN = mean)
+apply(coef_reps, MARGIN = 2, FUN = sd)
+```
+
+```{r}
+m1 <- lm(support ~ affinity + X1 + X2 + X3 + X4 + X5, data = df)
+summary(m1)
+coeftest(m1, cluster.boot(m1, cluster = cbind(as.character(df$participant_ID), as.character(df$movement_ID)), parallel = TRUE, R = 1000))
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+
+```{r}
+toplot <- data.frame(coef(summary(fit_lme)))[-1,]
+toplot$var <- row.names(toplot)
+toplot$True <- c(mubeta0, mubeta1, mubeta2, mubeta3, mubeta4, mubeta5)
+
+ggplot(data = toplot, aes(x = var, y = Estimate)) + geom_point() + 
+  geom_point(aes(y = True), color = "blue", shape = 4) + 
+  geom_errorbar(aes(ymin = Estimate - 2*Std..Error, ymax = Estimate + 2*Std..Error), width = 0.1) + 
+  coord_flip() + xlab("") + theme_bw() + geom_hline(aes(yintercept = 0), linetype = "dashed")
+```
+
+```{r}
+coefdf <- data.frame(coef(summary(fit_lme)))[-1,]
+coefdf$True.Value <- c(mubeta0, mubeta1, mubeta2, mubeta3, mubeta4, mubeta5)
+coefdf$Power <- pnorm(coefdf$True.Value/coefdf$Std..Error, 1.96, 1)
+coefdf
+```
+
+```{r}
+
+```
+
+```{r}
+simulate <- function(s = 100){
+  r2 <- rep(NA, s)
+  totalvar <- rep(NA, s)
+  for(i in 1:s){
+    N_subjects = 500
+    n_movements_per_subject = 5
+    total_rows = N_subjects*n_movements_per_subject
+    # Design matrix in which the 1000 subjects are randomly assigned to five different conditions
+    design_mat <- matrix(replicate(total_rows, rbinom(5, size = 1, .5)), nrow = total_rows)
+    movements <- rep(c(1,2,3,4,5), N_subjects)
+    participants <- sort(rep(1:N_subjects, 5))
+    design_mat  <- data.frame(cbind(participants, movements, design_mat))
+    colnames(design_mat) <- c("participant_ID", "movement_ID", "X1", "X2", "X3", "X4", "X5")
+    mubeta0 <- 3
+    mubeta1 <- .8
+    mubeta2 <- .4
+    mubeta3 <- .2
+    mubeta4 <- .1
+    mubeta5 <- .05
+    participant_ID <- 1:N_subjects
+    political_affiliation <- rnorm(N_subjects, 0, 1.5)
+    alpha1 <- rnorm(N_subjects, 0, .5)
+    beta0 <- rnorm(N_subjects, mubeta0, mubeta0/4)
+    beta1 <- rnorm(N_subjects, mubeta1, mubeta1/4)
+    beta2 <- rnorm(N_subjects, mubeta2, mubeta2/4)
+    beta3 <- rnorm(N_subjects, mubeta3, mubeta3/4)
+    beta4 <- rnorm(N_subjects, mubeta4, mubeta4/4)
+    beta5 <- rnorm(N_subjects, mubeta5, mubeta5/4)
+    participants_mat  <- data.frame(cbind(participant_ID, political_affiliation, alpha1, beta0, beta1, beta2, beta3, beta4, beta5))
+    head(participants_mat)
+    dim(participants_mat)
+    df <- inner_join(design_mat, participants_mat, by = "participant_ID")
+    df <- inner_join(df, movements_mat, by = "movement_ID")
+    df$affinity <- (6 - abs(df$movement_ideology - df$political_affiliation))/6
+    pmin_pmax_clip <- function(x, a, b) pmax(a, pmin(x, b) )
+    df$support <- -1.5 + rowSums(df[,c("alpha1", "alpha2", "beta0", "beta1", "beta2", "beta3", "beta4", "beta5")] * 
+                                 cbind(1, 1, df[,c("affinity", "X1", "X2", "X3", "X4", "X5")])) + rnorm(total_rows, 0, 1)
+    df$support <- pmin_pmax_clip(df$support, -5, 5)
+    fit_lme <- lmer(support ~ 1 + affinity + X1 + X2 + X3 + X4 + X5 + (1 | movement_ID),
+                    data = df)
+    #summary(fit_lme)
+    r2[i] <- r.squaredGLMM(fit_lme)[2]
+    totalvar[i] <- var(df$support)
+  }
+  
+  return(data.frame(r2, totalvar))
+}
+
+```
+
+```{r}
+res <- simulate(s = 100)
+mean(sqrt(res$totalvar - res$r2*res$totalvar))
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
